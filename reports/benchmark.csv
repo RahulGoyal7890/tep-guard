@@ -1,0 +1,22 @@
+fault,detection_rate,false_alarm_rate,detection_delay_minutes,detected,description,kind,t2_rate,spe_rate,isolation_plain,isolation_rbc
+1,0.9975,0.03125,6.0,True,"A/C feed ratio, B composition constant (stream 4)",step,0.995,0.9975,0.81625,0.8375
+2,0.9875,0.03125,30.0,True,"B composition, A/C ratio constant (stream 4)",step,0.9825,0.9875,nan,nan
+3,0.0875,0.0875,126.0,True,D feed temperature (stream 2),step,0.07375,0.01625,nan,nan
+4,0.97,0.0125,0.0,True,Reactor cooling water inlet temperature,step,0.50125,0.93625,1.0,1.0
+5,0.32,0.0125,0.0,True,Condenser cooling water inlet temperature,step,0.29875,0.2525,0.22,0.18125
+6,1.0,0.0,0.0,True,A feed loss (stream 1),step,0.995,1.0,0.185,0.17625
+7,1.0,0.0,0.0,True,"C header pressure loss, reduced availability (stream 4)",step,0.99625,1.0,0.95375,0.9575
+8,0.97875,0.00625,57.0,True,"A, B, C feed composition (stream 4)",random variation,0.975,0.9725,nan,nan
+9,0.0825,0.10625,12.0,True,D feed temperature (stream 2),random variation,0.06,0.0275,nan,nan
+10,0.57875,0.00625,63.0,True,C feed temperature (stream 4),random variation,0.48625,0.37625,nan,nan
+11,0.71625,0.025,15.0,True,Reactor cooling water inlet temperature,random variation,0.52375,0.61,0.75125,0.6725
+12,0.99,0.0375,6.0,True,Condenser cooling water inlet temperature,random variation,0.9875,0.9675,0.1025,0.0925
+13,0.95375,0.025,111.0,True,Reaction kinetics,slow drift,0.95,0.95125,nan,nan
+14,1.0,0.01875,0.0,True,Reactor cooling water valve,sticking,0.99,0.99875,0.94375,0.81
+15,0.13,0.025,1722.0,True,Condenser cooling water valve,sticking,0.10875,0.0325,0.055,0.03875
+16,0.47375,0.21875,105.0,True,Unknown,unknown,0.3125,0.29625,nan,nan
+17,0.92875,0.01875,69.0,True,Unknown,unknown,0.7875,0.92375,nan,nan
+18,0.90375,0.04375,249.0,True,Unknown,unknown,0.8875,0.90125,nan,nan
+19,0.18,0.025,228.0,True,Unknown,unknown,0.06125,0.12625,nan,nan
+20,0.60625,0.0,240.0,True,Unknown,unknown,0.47625,0.51375,nan,nan
+21,0.53125,0.1,798.0,True,Stream 4 valve fixed at steady state position,constant position,0.405,0.51375,0.015,0.01625
