@@ -1,3 +1,6 @@
+<<<<<<< HEAD
+# tep-guard
+=======
 # TEP-Guard
 
 Serverless multivariate process monitoring for a chemical plant, benchmarked
@@ -214,3 +217,4 @@ look rigorous while measuring nothing. The mapping is in `FAULTS` in
       explanation
 - [ ] Day 4: GitHub Actions CI, input drift monitoring
 - [ ] Day 5: architecture diagram, demo GIF
+>>>>>>> 0e808a4 (PCA process monitoring on Tennessee Eastman: detection, isolation, calibrated limits)
