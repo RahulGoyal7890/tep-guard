@@ -1,19 +1,18 @@
 ![CI](https://github.com/RahulGoyal7890/tep-guard/actions/workflows/ci.yml/badge.svg)
 
-<<<<<<< HEAD
-# tep-guard
-=======
 # TEP-Guard
 
-Serverless multivariate process monitoring for a chemical plant, benchmarked
-on the Tennessee Eastman Process. Detects that something has gone wrong, then
-names the instruments responsible.
+Serverless multivariate process monitoring for a chemical plant. Detects that
+something has gone wrong, names the instruments responsible, and writes a
+summary an operator can act on.
 
-Runs on AWS Lambda, deployed with Terraform, tested in CI. Costs about a
-dollar a month at demo scale, and nothing when idle.
+Benchmarked on the Tennessee Eastman Process. Deployed on AWS Lambda with
+Terraform, tested in CI, and costs about a dollar a month to run.
 
 ```bash
-make data && make bench && make test && make invoke
+make venv && source .venv/bin/activate
+make data && make bench && make test
+python scripts/demo.py
 ```
 
 ## Why this exists
@@ -21,73 +20,122 @@ make data && make bench && make test && make invoke
 Chemical plants run hundreds of correlated sensors. Univariate alarms on each
 one miss the failures that matter, because a fault often shows up as the
 *relationship* between variables breaking rather than any single tag leaving
-its range. Multivariate statistical process monitoring catches those, and it
-is what commercial systems from AspenTech, AVEVA and Honeywell are built on.
+its range. Multivariate statistical process monitoring catches those, and it is
+what the commercial systems from AspenTech, AVEVA and Honeywell are built on.
 
-Tennessee Eastman is the standard public benchmark for this problem: a
-simulated plant with 52 measured variables and 21 documented faults, published
-by Downs and Vogel in 1993 and used in the fault detection literature ever
-since. It has labelled ground truth for every fault, which real plant data
-almost never does.
+Tennessee Eastman is the standard public benchmark: a simulated plant with 52
+measured variables and 21 documented faults, published by Downs and Vogel in
+1993 and used in the fault-detection literature ever since. It has labelled
+ground truth for every fault, which real plant data almost never does — which is
+exactly what makes it possible to report honest isolation numbers here.
 
 ## Results
 
-Fitted on 500 samples of fault-free operation. Evaluated on 21 held-out
-faulty runs of 960 samples each, fault injected at sample 160.
+Fitted on 500 samples of fault-free operation. Evaluated on 21 held-out faulty
+runs of 960 samples each, fault injected at sample 160.
 
 | Metric | Value |
 | --- | --- |
 | Mean detection rate, 18 detectable faults | **78.4%** |
 | False alarm rate, held-out normal run | **3.9%** |
+| False alarm rate under the sustained-alarm rule | **0.4%** |
 | Median detection delay | **44 min** |
 | Mean detection rate on faults 3, 9, 15 | 10.0% |
 | Top-3 isolation accuracy | **50.4%** |
 | Components retained | 24 of 52 |
 
-Faults 3, 9 and 15 are reported separately because no published method
-detects them reliably; their signature is not distinguishable from normal
-operation. Folding them into the headline mean would understate a system that
-is working correctly. Full per-fault numbers are in
-[`reports/benchmark.md`](reports/benchmark.md).
+Faults 3, 9 and 15 are reported separately because no published method detects
+them reliably; their signature is not distinguishable from normal operation.
+Folding them into the headline would understate a system that is working
+correctly. Per-fault numbers are in [`reports/benchmark.md`](reports/benchmark.md),
+and CI fails the build if the mean detection rate or isolation accuracy drifts
+outside a set band.
 
-## Two things that did not work
+## Architecture
 
-Portfolio projects usually only report the wins. These are the two results
-that went against what the literature suggested, and they were more
-interesting than the parts that worked.
+```
+d00.dat (fault-free)
+    ├── fit split (350)         → standardise → PCA, 24 components
+    └── calibration split (150) → empirical T² and SPE limits
+                                        ↓
+                          artifacts/monitor.json  (30 KB)
+                                        ↓
+                        baked into a Lambda container image
+                                        ↓
+CSV → S3 batches/ → Lambda → T²/SPE → alarm? → contribution ranking
+                                                       ↓
+                                          Bedrock writes the summary
+                                                       ↓
+                                              S3 results/ + CloudWatch
+```
 
-### Reconstruction-based contributions lost to plain contributions
+Two statistics, because faults arrive in two ways. **T²** measures abnormal
+movement *inside* the subspace the process normally varies in. **SPE** measures
+movement *orthogonal* to it, meaning the correlation structure has broken. A
+sensor drifting out of agreement with its neighbours shows up in SPE; a genuine
+operating-point excursion shows up in T².
 
-Plain SPE contributions have a known weakness called smearing: a fault in one
-variable inflates the residuals of everything correlated with it, so the
-contribution plot blames innocent instruments. Reconstruction-based
-contribution (RBC, Alcala & Qin 2009) was designed to fix exactly this.
+An alarm requires three consecutive exceedances. A single sample crossing a
+limit is noise, operators do not act on it, and counting it as a detection
+flatters the numbers.
 
-On this benchmark it did not.
+### The LLM narrates; it does not diagnose
 
-| Method | Top-3 isolation accuracy |
-| --- | --- |
-| Plain contributions | **50.4%** |
-| RBC | 47.8% |
+The contribution analysis produces a ranked list of instruments. Bedrock turns
+that list into prose. It never sees raw process data, is never asked what is
+wrong, and cannot add a variable to the suspect list or invent a root cause.
+Every number in its output is passed through from the statistics.
 
-Scored across the 10 faults whose root cause maps to specific instrumentation
-without argument. RBC won on faults 1 and 7 by a small margin and lost
-clearly on 11 and 14. The likely reason is that RBC assumes a fault direction
-aligned with a single variable axis; TEP faults propagate through control
-loops, so by the time the fault is visible several variables have genuinely
-moved and the single-variable reconstruction is the wrong model. Both methods
-are implemented and the comparison reruns with `make bench`.
+That constraint is deliberate. A wrong number from PCA is a bug a test catches.
+A confident fabrication from a language model is indistinguishable from a
+correct answer, and on a plant it would be acted on. So the model has no
+authority over any claim that matters.
 
-### The textbook control limits were wrong by a factor of four
+If Bedrock is unavailable the system falls back to a deterministic template. A
+monitoring system must not stop reporting faults because a language model is
+down.
+
+### Worked example
+
+Fault 4 is a step change in reactor cooling water inlet temperature.
+
+```
+before the fault :   1.2% flagged
+after the fault  :  97.0% flagged
+detected in      : 0 minutes
+
+1. XMEAS(21) Reactor cooling water outlet temperature
+2. XMEAS(14) Product separator underflow (stream 10)
+3. XMEAS(9)  Reactor temperature
+```
+
+And the generated summary:
+
+> A severe abnormal condition has been detected by the process monitor. The
+> Reactor cooling water outlet temperature from XMEAS(21) is moderately above
+> its normal operating range, the Product separator underflow (stream 10) from
+> XMEAS(14) is moderately above its normal operating range, and the Reactor
+> temperature from XMEAS(9) is far above its normal operating range. Check the
+> cooling water system first.
+
+The top contributor is the reactor cooling water outlet temperature, which is
+the correct physical answer.
+
+## Four things that did not work
+
+These were the interesting parts. Each is a case where the obvious approach
+reported success while being wrong.
+
+### 1. The textbook control limits were wrong by a factor of four
 
 The analytic SPE limit (Jackson & Mudholkar) is standard and appears in every
 reference on the subject. Configured for a 1% false alarm rate, it produced
 **17.7%** false alarms on a held-out normal run.
 
 Diagnosing it ruled out the obvious explanations. There was no distribution
-shift between the training and test runs: the largest mean shift across all
-52 variables was 0.46 sigma. In-sample false alarms were 0.2%, so the model
-fit fine. The cause was the residual subspace being overfit:
+shift between the training and test runs — the largest mean shift across all 52
+variables was 0.46σ. In-sample false alarms were 0.2%, so the model fit fine.
+The cause was the residual subspace being overfit:
 
 | Mean SPE on | Value |
 | --- | --- |
@@ -97,126 +145,167 @@ fit fine. The cause was the residual subspace being overfit:
 
 The analytic limit is derived from residual eigenvalues estimated on the same
 data the projection was fitted to, and the small-eigenvalue tail of a sample
-covariance is biased low. So the limit sits at roughly half of where it
-should, and new data walks straight through it.
+covariance is biased low. So the limit sits at roughly half of where it should,
+and new data walks straight through it.
 
-The fix is to fit the projection on one chronological split and calibrate the
-limits as percentiles on a disjoint one. That took the false alarm rate to
-3.9%, and to **0.4%** under the sustained-alarm rule the system actually uses
-for detection. The split is chronological rather than random on purpose:
-these statistics have lag-1 autocorrelation around 0.5, so a random split
-would leak neighbouring samples across it and restore the same optimism.
+Fitting the projection on one chronological split and calibrating the limits as
+percentiles on a disjoint one took false alarms to 3.9%, and to **0.4%** under
+the sustained-alarm rule. The split is chronological rather than random on
+purpose: these statistics have lag-1 autocorrelation around 0.5, so a random
+split would leak neighbouring samples across it and restore the same optimism.
 
-This is the single most useful thing in the repo. A monitoring system with
-17.7% false alarms gets muted by operators in the first week, and the
-textbook formula gives you one without complaining.
+A monitoring system with 17.7% false alarms gets muted by operators in the first
+week, and the textbook formula hands you one without complaining.
 
-## How it works
+### 2. Reconstruction-based contributions lost to plain contributions
 
+Plain SPE contributions have a known weakness called smearing: a fault in one
+variable inflates the residuals of everything correlated with it.
+Reconstruction-based contribution (RBC, Alcala & Qin 2009) was designed to fix
+exactly this.
+
+| Method | Top-3 isolation accuracy |
+| --- | --- |
+| Plain contributions | **50.4%** |
+| RBC | 47.8% |
+
+Scored across the 10 faults whose root cause maps to specific instrumentation
+without argument. RBC won narrowly on faults 1 and 7 and lost clearly on 11 and
+14. The likely reason is that RBC assumes a fault direction aligned with a
+single variable axis, while TEP faults propagate through control loops — by the
+time the fault is visible, several variables have genuinely moved.
+
+### 3. A mutable image tag pinned the Lambda to three-week-old code
+
+The Lambda pointed at `tep-guard:latest`. Pushing a new image to the same tag
+left Terraform seeing `image_uri` unchanged — still the literal string
+`...:latest` — so it never updated the function. Lambda had resolved the image
+*digest* at creation and kept running that one.
+
+Everything reported success. Docker built, the push succeeded, Terraform applied
+cleanly, environment variables updated correctly, IAM was correct. The function
+silently executed old code, and the symptom was a feature that appeared to
+deploy but never took effect.
+
+Fixed by tagging images with the git SHA, so `image_uri` changes on every
+deploy, plus an explicit digest comparison in `deploy.sh` that forces an update
+and fails loudly if they still disagree.
+
+### 4. Counting shifted variables cannot separate a fault from drift
+
+A fault means the plant broke and the monitor is right. Drift means the plant
+moved to a new operating point and the monitor's assumptions expired. Both
+produce high alarm rates, and different people need to be told.
+
+The obvious heuristic — a fault moves a few variables, drift moves many — fails.
+Fault 6 is a total loss of the A feed, which cascades through 39 of the 52
+variables. By count it is indistinguishable from drift.
+
+What separates them is time. A fault has an onset: the batch is normal, then it
+is not. Drift is already present when the batch starts. Comparing the opening
+quarter of a batch against the closing quarter classifies every TEP fault
+correctly while still flagging a synthetic plant-wide shift as drift.
+
+## Infrastructure
+
+Terraform provisions S3, ECR, the Lambda function, a scoped IAM role, and a
+CloudWatch log group. Dropping a CSV into `batches/` triggers the function.
+
+```bash
+./deploy.sh            # build, push, apply, verify digest, smoke test
+./deploy.sh destroy    # remove everything, then confirm nothing survived
 ```
-d00.dat (fault-free)
-    |
-    +-- fit split (350)  ->  standardize -> PCA, 24 components
-    |
-    +-- calibration split (150)  ->  empirical T2 and SPE limits
-                                          |
-                                          v
-                            artifacts/monitor.json  (30 KB)
-                                          |
-                          baked into the Lambda container image
-                                          |
-new batch --> S3 --> Lambda --> T2 / SPE --> alarm? --> contribution ranking
-                                                              |
-                                                              v
-                                                     top-3 suspect instruments
-```
 
-Two statistics, because faults arrive in two ways. **T²** measures abnormal
-movement *inside* the subspace the process normally varies in. **SPE**
-measures movement *orthogonal* to it, meaning the correlation structure has
-broken. A sensor drifting out of agreement with its neighbours shows up in
-SPE; a genuine operating-point excursion shows up in T².
+The IAM role gets `s3:GetObject` on `batches/*`, `s3:PutObject` on `results/*`,
+log writes, and `bedrock:InvokeModel` on one specific model — not
+`AmazonS3FullAccess` and not a Bedrock wildcard.
 
-An alarm requires three consecutive exceedances. A single sample crossing a
-limit is noise, operators do not act on it, and counting it as a detection
-flatters the numbers.
+Cost traps and the specific Terraform line defusing each are in
+[`COSTS.md`](COSTS.md). The short version: no VPC (a NAT Gateway is ~$32/month
+whether or not traffic flows), an ECR lifecycle policy (every push orphans the
+previous ~250 MB image), an explicit log group (Lambda-created ones default to
+never expire and survive `terraform destroy`), and no S3 versioning.
 
-### Worked example
+## CI
 
-Fault 4 is a step change in reactor cooling water inlet temperature. Running
-`make invoke`:
+Three jobs on every push:
 
-```
-normal (pre-fault):   2/160 flagged (1.3%)
-faulty:             232/240 flagged (96.7%) in 3 ms
-  sample 0: T2=162.8 SPE=99.4 via T2
-    XMEAS(21) Reactor cooling water outlet temperature      15.746
-    XMEAS(14) Product separator underflow (stream 10)       13.542
-    XMEAS(9)  Reactor temperature                            9.371
-```
+- **Tests** — 29 tests, then reruns the benchmark and fails if mean detection
+  rate leaves [0.74, 0.82] or isolation leaves [0.46, 0.55]. A refactor can keep
+  every unit test green while quietly changing the headline numbers.
+- **Lambda image** — builds the real container, asserts `import scipy` *fails*
+  inside it, and asserts the baked-in model is calibrated.
+- **Terraform** — format check, validate, and a grep that fails the build if
+  `vpc_config` ever appears or log retention goes missing.
 
-The top contributor is the reactor cooling water outlet temperature, which is
-the correct physical answer.
+The gates check the README's claims rather than just whether the code runs.
 
 ## Repository layout
 
 ```
 src/tepguard/
     data.py       loaders, 52 variable names, 21-fault catalogue
-    monitor.py    PCAMonitor: fit, calibrate, T2/SPE, contributions, RBC
+    monitor.py    PCAMonitor: fit, calibrate, T²/SPE, contributions, RBC
     metrics.py    detection rate, FAR, sustained delay, top-k isolation
+    explain.py    Bedrock narration with deterministic fallback
+    drift.py      distribution shift vs process fault
 lambda/
     handler.py    three event shapes, validation, structured logging
     Dockerfile    AWS base image, numpy only
-scripts/
-    download_data.py, run_benchmark.py, local_invoke.py
+infra/            Terraform
+scripts/          download, benchmark, demo, local invoke, memory tuning
 tests/            29 tests
-infra/            Terraform (day 2)
 ```
 
-`scipy` is imported lazily and only at fit time. Once the limits are baked
-into `monitor.json`, inference needs nothing but numpy, which keeps roughly
-100 MB out of the container image. There is a test that blocks the `scipy`
-import and scores a batch anyway.
+`scipy` is imported lazily and only at fit time. Once the limits are baked into
+`monitor.json`, inference needs nothing but numpy, keeping roughly 100 MB out of
+the container. A CI step asserts it.
 
 ## Notes on the data
 
-Tennessee Eastman is public simulation output, not plant data. No proprietary
-or client data is used anywhere in this project.
+Tennessee Eastman is public simulation output, not plant data. No proprietary or
+client data is used anywhere in this project.
 
-One trap worth naming: `d00.dat` ships transposed as (52, 500) while every
-other file is (samples, variables). Load it without the transpose and you get
-a 52-sample, 500-variable matrix. PCA still runs, no error is raised, and
-every number downstream is meaningless. `tests/test_tepguard.py` asserts the
-shape.
+One trap worth naming: `d00.dat` ships transposed as (52, 500) while every other
+file is (samples, variables). Load it without the transpose and you get a
+52-sample, 500-variable matrix. PCA still runs, no error is raised, and every
+number downstream is meaningless. There is a test asserting the shape.
+
+The downloader validates every file by loading it and checking its shape rather
+than checking that a file exists, because an interrupted download leaves a
+valid-looking truncated file that silently produces a plausible wrong answer.
 
 ### On the isolation ground truth
 
-Isolation accuracy is only scored on the 10 faults whose root cause maps to
-specific instrumentation without argument, for example fault 4 (reactor
-cooling water inlet temperature) mapping to XMV(10) and XMEAS(21). For faults
-like 13 (slow drift in reaction kinetics) or the unknown faults 16 to 20,
-there is no defensible single answer, and inventing one would make the metric
-look rigorous while measuring nothing. The mapping is in `FAULTS` in
-`src/tepguard/data.py` and is open to argument.
+Isolation accuracy is scored only on the 10 faults whose root cause maps to
+specific instrumentation without argument — for example fault 4 mapping to
+XMV(10) and XMEAS(21). For faults like 13 (slow drift in reaction kinetics) or
+the unknown faults 16–20 there is no defensible single answer, and inventing one
+would make the metric look rigorous while measuring nothing. The mapping is in
+`FAULTS` in `src/tepguard/data.py` and is open to argument.
+
+## Limitations
+
+- Isolation at 50.4% top-3 is useful for narrowing a search, not for automatic
+  root-cause attribution.
+- Drift detection is implemented and tested but not yet wired into the Lambda
+  handler.
+- Lambda memory is set to 512 MB against 112 MB observed usage. Since Lambda
+  scales CPU with memory, the cheaper setting is an empirical question;
+  `scripts/tune_memory.py` measures it and has not yet been run.
+- The plain-language severity bands improved readability but lost the causal
+  framing an earlier prompt produced — the summary no longer explains *why* the
+  largest-moving variable is not the cause.
+- Single-model monitoring only. Real plants need per-operating-mode models, and a
+  mode change here would register as drift.
 
 ## References
 
 - Downs & Vogel (1993), *A plant-wide industrial process control problem*,
-  Computers & Chemical Engineering 17(3):245-255
-- Jackson & Mudholkar (1979), *Control procedures for residuals associated
-  with principal component analysis*, Technometrics 21(3):341-349
+  Computers & Chemical Engineering 17(3):245–255
+- Jackson & Mudholkar (1979), *Control procedures for residuals associated with
+  principal component analysis*, Technometrics 21(3):341–349
 - Alcala & Qin (2009), *Reconstruction-based contribution for process
-  monitoring*, Automatica 45(7):1593-1600
-- Chiang, Russell & Braatz (2001), *Fault Detection and Diagnosis in
-  Industrial Systems*
-
-## Status
-
-- [x] Day 1: data, monitor, calibration, 29 tests, benchmark, Lambda handler
-- [ ] Day 2: Terraform (S3, ECR, Lambda, IAM), verified teardown
-- [ ] Day 3: Bedrock layer turning contributions into an operator-facing
-      explanation
-- [ ] Day 4: GitHub Actions CI, input drift monitoring
-- [ ] Day 5: architecture diagram, demo GIF
->>>>>>> 0e808a4 (PCA process monitoring on Tennessee Eastman: detection, isolation, calibrated limits)
+  monitoring*, Automatica 45(7):1593–1600
+- Chiang, Russell & Braatz (2001), *Fault Detection and Diagnosis in Industrial
+  Systems*
