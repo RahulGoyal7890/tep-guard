@@ -231,6 +231,11 @@ resource "aws_lambda_function" "this" {
       MODEL_PATH    = "/opt/monitor.json"
       TOP_K         = tostring(var.top_k)
       LOG_LEVEL     = var.log_level
+
+      # Only switched on when the IAM role actually grants bedrock:InvokeModel,
+      # so the function can never attempt a call it is not permitted to make.
+      ENABLE_EXPLANATION = tostring(var.enable_bedrock)
+      BEDROCK_MODEL_ID   = var.bedrock_model_id
     }
   }
 

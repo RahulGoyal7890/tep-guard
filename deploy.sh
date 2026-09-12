@@ -12,7 +12,15 @@ set -euo pipefail
 cd "$(dirname "$0")"
 REGION="${REGION:-us-east-1}"
 PROJECT="${PROJECT:-tep-guard}"
-TAG="${TAG:-latest}"
+# Tag by git SHA, never :latest.
+#
+# :latest is a mutable pointer. Push a new image to the same tag and Terraform
+# sees image_uri unchanged -- still the literal string "...:latest" -- so it
+# does not update the function. Lambda resolved the digest when the function
+# was created and keeps running that image forever. Everything reports
+# success: docker builds, push succeeds, terraform applies, env vars update.
+# The function silently executes old code. Cost us most of a day.
+TAG="${TAG:-$(git rev-parse --short HEAD 2>/dev/null || date +%s)}"
 
 step () { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
@@ -66,11 +74,29 @@ docker tag "$PROJECT:$TAG" "$ECR:$TAG"
 docker push "$ECR:$TAG"
 
 step "Stage 3: apply the rest"
+echo "image tag: $TAG"
 terraform -chdir=infra apply -auto-approve -input=false \
   -var="region=$REGION" -var="project=$PROJECT" -var="image_tag=$TAG"
 
-step "Smoke test against the deployed function"
+step "Verifying Lambda is running the image we just pushed"
 FN=$(terraform -chdir=infra output -raw function_name)
+PUSHED=$(aws ecr describe-images --repository-name "$PROJECT" --region "$REGION" \
+  --image-ids imageTag="$TAG" --query 'imageDetails[0].imageDigest' --output text)
+RUNNING=$(aws lambda get-function --function-name "$FN" --region "$REGION" \
+  --query 'Code.ResolvedImageUri' --output text | sed 's/.*@//')
+if [ "$PUSHED" != "$RUNNING" ]; then
+  echo "  digest mismatch, forcing update"
+  echo "    pushed:  $PUSHED"
+  echo "    running: $RUNNING"
+  aws lambda update-function-code --function-name "$FN" --region "$REGION" \
+    --image-uri "$ECR:$TAG" >/dev/null
+  aws lambda wait function-updated --function-name "$FN" --region "$REGION"
+  RUNNING=$(aws lambda get-function --function-name "$FN" --region "$REGION" \
+    --query 'Code.ResolvedImageUri' --output text | sed 's/.*@//')
+fi
+[ "$PUSHED" = "$RUNNING" ] && echo "  ok, running $RUNNING" || { echo "  STILL MISMATCHED"; exit 1; }
+
+step "Smoke test against the deployed function"
 python3 scripts/make_payload.py --fault 4 --out /tmp/payload.json
 aws lambda invoke --function-name "$FN" --region "$REGION" \
   --cli-binary-format raw-in-base64-out \
