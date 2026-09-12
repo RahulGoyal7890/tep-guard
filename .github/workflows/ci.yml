@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # 26 MB over 23 files. Cached so CI does not hammer the mirror on every
+      # push -- that is what produced the 429s during development.
+      - name: Cache TEP data
+        id: cache-data
+        uses: actions/cache@v4
+        with:
+          path: data/raw
+          key: tep-data-v1
+
+      - name: Download data
+        if: steps.cache-data.outputs.cache-hit != 'true'
+        run: python scripts/download_data.py
+
+      - name: Verify data integrity
+        run: python scripts/download_data.py --verify
+
+      - name: Run tests
+        run: python -m pytest -v
+
+      # The benchmark is the project's headline claim. If a refactor quietly
+      # changes detection rate, this fails rather than shipping wrong numbers
+      # into the README.
+      - name: Benchmark regression check
+        run: |
+          python scripts/run_benchmark.py
+          python - <<'PY'
+          import csv, sys
+          rows = list(csv.DictReader(open("reports/benchmark.csv")))
+          undetectable = {3, 9, 15}
+          detectable = [r for r in rows if int(r["fault"]) not in undetectable]
+          mean_dr = sum(float(r["detection_rate"]) for r in detectable) / len(detectable)
+          plain = [float(r["isolation_plain"]) for r in rows if r["isolation_plain"] not in ("", "nan")]
+          iso = sum(plain) / len(plain)
+          print(f"mean detection rate: {mean_dr:.3f}")
+          print(f"top-3 isolation:     {iso:.3f}")
+          fail = []
+          if not 0.74 <= mean_dr <= 0.82:
+              fail.append(f"detection rate {mean_dr:.3f} outside [0.74, 0.82]")
+          if not 0.46 <= iso <= 0.55:
+              fail.append(f"isolation {iso:.3f} outside [0.46, 0.55]")
+          if fail:
+              print("::error::" + "; ".join(fail))
+              sys.exit(1)
+          print("benchmark within expected bounds")
+          PY
+
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark
+          path: reports/
+
+  lambda:
+    name: Lambda image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Builds the real Lambda image. Catches a missing COPY path or a
+      # dependency that is in requirements-dev.txt but not in the container --
+      # the kind of break that otherwise only shows up mid-deploy.
+      - name: Build image
+        run: docker build -f lambda/Dockerfile -t tep-guard:ci .
+
+      # The handler must run on numpy alone. scipy is fit-time only, and this
+      # is what keeps ~100 MB out of the image.
+      - name: Assert scipy is absent from the image
+        run: |
+          if docker run --rm --entrypoint python tep-guard:ci -c "import scipy" 2>/dev/null; then
+            echo "::error::scipy leaked into the Lambda image"
+            exit 1
+          fi
+          echo "scipy correctly absent"
+
+      - name: Assert the model is baked in
+        run: |
+          docker run --rm --entrypoint python tep-guard:ci -c "
+          import json
+          m = json.load(open('/opt/monitor.json'))
+          assert m['calibrated'], 'model in image is not calibrated'
+          print(f\"model ok: k={m['k']}, {m['n_calibration']} calibration samples\")
+          "
+
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Format check
+        run: terraform -chdir=infra fmt -check -diff
+
+      - name: Validate
+        run: |
+          terraform -chdir=infra init -backend=false
+          terraform -chdir=infra validate
+
+      # Guards the two cost traps that are invisible until the bill arrives.
+      - name: Cost guardrails
+        run: |
+          fail=0
+          if grep -q "vpc_config" infra/*.tf; then
+            echo "::error::vpc_config present -- a NAT Gateway costs ~\$32/month"
+            fail=1
+          fi
+          grep -q "retention_in_days" infra/main.tf || {
+            echo "::error::CloudWatch log group has no retention -- defaults to never expire"
+            fail=1
+          }
+          [ $fail -eq 0 ] && echo "cost guardrails ok"
+          exit $fail

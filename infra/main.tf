@@ -248,12 +248,12 @@ resource "aws_lambda_function" "this" {
 # Dropping a CSV into batches/ invokes the monitor. This is the whole
 # serverless pipeline: no server, no scheduler, no queue to run.
 resource "aws_lambda_permission" "s3" {
-  count         = var.enable_s3_trigger ? 1 : 0
-  statement_id  = "AllowExecutionFromS3"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.this.function_name
-  principal     = "s3.amazonaws.com"
-  source_arn    = aws_s3_bucket.data.arn
+  count          = var.enable_s3_trigger ? 1 : 0
+  statement_id   = "AllowExecutionFromS3"
+  action         = "lambda:InvokeFunction"
+  function_name  = aws_lambda_function.this.function_name
+  principal      = "s3.amazonaws.com"
+  source_arn     = aws_s3_bucket.data.arn
   source_account = local.account_id
 }
 
