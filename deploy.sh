@@ -76,7 +76,7 @@ docker push "$ECR:$TAG"
 step "Stage 3: apply the rest"
 echo "image tag: $TAG"
 terraform -chdir=infra apply -auto-approve -input=false \
-  -var="region=$REGION" -var="project=$PROJECT" -var="image_tag=$TAG"
+  -var="region=$REGION" -var="project=$PROJECT" -var="image_tag=$TAG" -var="enable_bedrock=true"
 
 step "Verifying Lambda is running the image we just pushed"
 FN=$(terraform -chdir=infra output -raw function_name)

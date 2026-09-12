@@ -91,9 +91,16 @@ class Deviation:
         return "near"
 
     def describe(self) -> str:
+        z = abs(self.z_score)
+        # Plain-language band instead of a sigma count. The system prompt
+        # forbids statistical jargon, and the model will happily repeat any
+        # jargon we hand it -- an instruction cannot outrank the payload.
+        band = (
+            "far " if z > 6 else "well " if z > 3 else "moderately " if z > 1.5 else "slightly "
+        )
         return (
-            f"{self.tag} {self.name}: {abs(self.z_score):.1f} standard "
-            f"deviations {self.direction} its normal operating value"
+            f"{self.tag} {self.name}: {band}{self.direction} "
+            f"its normal operating range"
         )
 
 

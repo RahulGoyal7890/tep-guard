@@ -78,9 +78,9 @@ variable "enable_s3_trigger" {
 }
 
 variable "enable_bedrock" {
-  description = "Day 3. Adds bedrock:InvokeModel for a single model to the Lambda role."
+  description = "Adds bedrock:InvokeModel for one model to the Lambda role, and switches on operator explanations."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "bedrock_model_id" {
