@@ -1,7 +1,5 @@
 ![CI](https://github.com/RahulGoyal7890/tep-guard/actions/workflows/ci.yml/badge.svg)
 
-![CI](https://github.com/RahulGoyal7890/tep-guard/actions/workflows/ci.yml/badge.svg)
-
 <<<<<<< HEAD
 # tep-guard
 =======
